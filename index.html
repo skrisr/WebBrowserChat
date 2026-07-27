@@ -1,54 +1,51 @@
-/*
+<!--
 ================================================================================
- 構想図 / CONCEPT DIAGRAM  ---  "LINE再現プロジェクト"
+ 構想図 / CONCEPT DIAGRAM  ---  "LINE再現プロジェクト" (Firebase + GitHub Pages版)
 ================================================================================
 
-  [ブラウザ (PC / スマホ)]
-        |  HTTP / HTTPS
-        |  WebSocket (wss)
+  [ブラウザ (iPad Safari など)]
+        |
+        |  静的ファイルとして読み込み
         v
-  [Cloudflare Worker : このファイル1本]
+  [GitHub Pages]  ---  index.html 1本を公開するだけ(ビルド不要)
         |
-        |-- ルーティング (export default fetch)
-        |     GET  /                          -> HTML(LINE風UI)を返す
-        |     POST /api/register              -> 新規登録
-        |     POST /api/login                 -> ログイン(セッション発行)
-        |     POST /api/logout                -> ログアウト
-        |     GET  /api/me                    -> 自分の情報
-        |     GET  /api/users?q=              -> ユーザー検索
-        |     GET  /api/chats                 -> 自分のチャット一覧
-        |     POST /api/chats                 -> 個別/グループチャット作成
-        |     GET  /api/chats/:id/messages    -> 過去メッセージ取得
-        |     POST /api/upload                -> ファイルアップロード
-        |     GET  /files/:key                -> ファイル配信
-        |     GET  /ws/:chatId                -> WebSocket確立(DOへ中継)
-        |
-        |-- KV Namespace: USERS      (ユーザー情報 / パスワードハッシュ)
-        |-- KV Namespace: SESSIONS   (ログインセッショントークン)
-        |-- KV Namespace: CHATS      (チャットのメタ情報・ユーザー別一覧)
-        |-- R2 Bucket:    FILES      (送信された画像・ファイル本体)
-        |-- Durable Object: ChatRoom (チャットごとに1インスタンス)
-              |-- WebSocket接続の保持・ブロードキャスト
-              |-- メッセージ履歴の永続化 (state.storage)
-              |-- 既読(read) / 入力中(typing) / オンライン状態(presence) の配信
+        |  ブラウザ上のJavaScriptからFirebase SDKを直接呼び出す
+        v
+  [Firebase (Google)]
+        |-- Authentication   : ユーザー名+パスワードでログイン
+        |                      (内部的には username@lineclone-users.app という
+        |                       仮のメールアドレスに変換してFirebase Authに登録)
+        |-- Firestore        : usernames  ... ユーザー名の重複チェック用
+        |                       profiles   ... 表示名・アイコン色などのプロフィール
+        |                       chats      ... チャットのメンバー・種別・既読状況
+        |                       chats/{id}/messages ... メッセージ本体(リアルタイム購読)
+        |                       chats/{id}/typing   ... 入力中の状態
+        |-- Storage          : 送信された画像・ファイルの保存先
 
-  画面構成 (LINE風UI・レスポンシブ):
+  画面構成 (LINE風UI・レスポンシブ、index.htmlのCSSで制御):
         PC幅  : [サイドバー(チャット一覧)] + [チャットルーム] を横並び表示
         スマホ幅: どちらか一方のみ表示し、ヘッダーの戻る操作で切替
 
   主な機能:
-        ログイン/新規登録, チャット一覧, 個別チャット, グループチャット,
-        リアルタイム送受信(WebSocket), 画像/ファイル送信, 既読表示,
-        入力中表示, オンライン状態表示, 未読バッジ, 日付区切り,
-        ダークモード切替, チャット検索, 新規チャット作成モーダル
+        ユーザー名でのログイン/新規登録, チャット一覧, 個別チャット,
+        グループチャット, リアルタイム送受信(Firestore onSnapshot),
+        画像/ファイル送信(Firebase Storage), 既読表示, 入力中表示,
+        未読バッジ, 日付区切り, ダークモード切替, チャット検索,
+        新規チャット作成モーダル
+
+  セットアップに必要な作業 (すべてWebブラウザの管理画面のみで可能):
+        1. Firebaseプロジェクトを作成し、Authentication(メール/パスワード)
+           Firestore, Storageを有効化する
+        2. Firebaseの設定値(FIREBASE_CONFIG)をこのファイル内の該当箇所に貼る
+        3. Firestore/Storageのセキュリティルールを、別途渡すルール文言に置き換える
+        4. GitHubリポジトリを作り、GitHub Pagesを有効化してこのファイルを置く
 
 --------------------------------------------------------------------------------
  更新履歴 (このファイルを編集するたびに、この下へ1行追記すること)
-   2026-07-27  初版作成
+   2026-07-27  Cloudflare Worker版から、Firebase + GitHub Pages版へ全面移行
 ================================================================================
-*/
-
-const HTML_PAGE = `<!DOCTYPE html>
+-->
+<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -98,7 +95,6 @@ body{
 button{font-family:inherit;cursor:pointer;}
 input,textarea{font-family:inherit;}
 
-/* ---------- 認証画面 ---------- */
 #auth-screen{
   flex:1;
   display:flex;
@@ -149,9 +145,7 @@ input,textarea{font-family:inherit;}
   color:#fff;
   font-weight:600;
 }
-.auth-field{
-  margin-bottom:14px;
-}
+.auth-field{margin-bottom:14px;}
 .auth-field label{
   display:block;
   font-size:12px;
@@ -187,12 +181,7 @@ input,textarea{font-family:inherit;}
   text-align:center;
 }
 
-/* ---------- メイン画面 ---------- */
-#main-screen{
-  display:none;
-  flex:1;
-  overflow:hidden;
-}
+#main-screen{display:none;flex:1;overflow:hidden;}
 #main-screen.active{display:flex;}
 
 .sidebar{
@@ -222,10 +211,7 @@ input,textarea{font-family:inherit;}
   font-size:16px;
   display:flex;align-items:center;justify-content:center;
 }
-.search-bar{
-  padding:8px 12px;
-  border-bottom:1px solid var(--border);
-}
+.search-bar{padding:8px 12px;border-bottom:1px solid var(--border);}
 .search-bar input{
   width:100%;
   padding:8px 12px;
@@ -236,10 +222,7 @@ input,textarea{font-family:inherit;}
   font-size:13.5px;
   outline:none;
 }
-.chat-list{
-  flex:1;
-  overflow-y:auto;
-}
+.chat-list{flex:1;overflow-y:auto;}
 .chat-item{
   display:flex;
   align-items:center;
@@ -265,7 +248,6 @@ input,textarea{font-family:inherit;}
 .chat-item-body{flex:1;min-width:0;}
 .chat-item-top{display:flex;justify-content:space-between;align-items:baseline;}
 .chat-item-name{font-size:14.5px;font-weight:600;}
-.chat-item-time{font-size:11px;color:var(--sub);}
 .chat-item-preview{
   font-size:12.5px;color:var(--sub);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -278,10 +260,8 @@ input,textarea{font-family:inherit;}
   display:flex;align-items:center;justify-content:center;
   padding:0 5px;
 }
-.chat-item-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
 .empty-list{padding:30px 16px;color:var(--sub);font-size:13px;text-align:center;}
 
-/* ---------- チャットパネル ---------- */
 .chat-panel{
   flex:1;
   display:flex;
@@ -289,53 +269,26 @@ input,textarea{font-family:inherit;}
   background:var(--bg);
   min-width:0;
 }
-.chat-panel.empty-state{
-  align-items:center;justify-content:center;
-  color:var(--sub);font-size:14px;
-}
+.chat-panel.empty-state{align-items:center;justify-content:center;color:var(--sub);font-size:14px;}
 .chat-header{
   background:var(--header-bg);
   color:var(--header-text);
   padding:12px 16px;
   display:flex;align-items:center;gap:12px;
 }
-.back-btn{
-  display:none;
-  background:none;border:none;color:#fff;font-size:20px;
-  padding:0 4px;
-}
+.back-btn{display:none;background:none;border:none;color:#fff;font-size:20px;padding:0 4px;}
 .chat-header-name{font-size:16px;font-weight:700;}
 .chat-header-sub{font-size:11.5px;opacity:0.85;}
-.messages{
-  flex:1;
-  overflow-y:auto;
-  padding:14px 16px;
-  display:flex;flex-direction:column;gap:2px;
-}
-.date-sep{
-  text-align:center;
-  font-size:11.5px;
-  color:var(--sub);
-  margin:14px 0 8px;
-}
-.date-sep span{
-  background:rgba(0,0,0,0.06);
-  padding:3px 12px;
-  border-radius:12px;
-}
-.msg-row{
-  display:flex;
-  gap:8px;
-  margin:3px 0;
-  align-items:flex-end;
-}
+.messages{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:2px;}
+.date-sep{text-align:center;font-size:11.5px;color:var(--sub);margin:14px 0 8px;}
+.date-sep span{background:rgba(0,0,0,0.06);padding:3px 12px;border-radius:12px;}
+.msg-row{display:flex;gap:8px;margin:3px 0;align-items:flex-end;}
 .msg-row.mine{justify-content:flex-end;}
 .msg-avatar{
   width:32px;height:32px;border-radius:50%;
   display:flex;align-items:center;justify-content:center;
   color:#fff;font-weight:700;font-size:13px;flex-shrink:0;
 }
-.msg-avatar.hidden{visibility:hidden;}
 .msg-col{display:flex;flex-direction:column;max-width:62%;}
 .msg-row.mine .msg-col{align-items:flex-end;}
 .msg-sender{font-size:11px;color:var(--sub);margin-bottom:2px;}
@@ -347,32 +300,17 @@ input,textarea{font-family:inherit;}
   word-break:break-word;
   white-space:pre-wrap;
 }
-.msg-row.mine .bubble{
-  background:var(--bubble-mine);
-  border-top-right-radius:4px;
-}
-.msg-row:not(.mine) .bubble{
-  background:var(--bubble-other);
-  border-top-left-radius:4px;
-}
-.bubble img{
-  max-width:220px;max-height:220px;border-radius:10px;display:block;
-}
+.msg-row.mine .bubble{background:var(--bubble-mine);border-top-right-radius:4px;}
+.msg-row:not(.mine) .bubble{background:var(--bubble-other);border-top-left-radius:4px;}
+.bubble img{max-width:220px;max-height:220px;border-radius:10px;display:block;}
 .file-chip{
   display:flex;align-items:center;gap:8px;
   background:rgba(0,0,0,0.05);
   padding:8px 12px;border-radius:10px;
   font-size:13px;text-decoration:none;color:var(--text);
 }
-.msg-meta{
-  font-size:10.5px;color:var(--sub);
-  margin-top:3px;
-  display:flex;gap:6px;
-}
-.typing-indicator{
-  font-size:12px;color:var(--sub);
-  padding:0 4px;height:18px;
-}
+.msg-meta{font-size:10.5px;color:var(--sub);margin-top:3px;display:flex;gap:6px;}
+.typing-indicator{font-size:12px;color:var(--sub);padding:0 4px;height:18px;}
 .composer{
   border-top:1px solid var(--border);
   background:var(--sidebar-bg);
@@ -380,8 +318,7 @@ input,textarea{font-family:inherit;}
   display:flex;align-items:flex-end;gap:8px;
 }
 .composer textarea{
-  flex:1;
-  resize:none;
+  flex:1;resize:none;
   border:1px solid var(--border);
   border-radius:20px;
   padding:10px 15px;
@@ -400,7 +337,6 @@ input,textarea{font-family:inherit;}
 .send-btn{background:var(--green) !important;color:#fff !important;}
 .send-btn:disabled{opacity:0.4;}
 
-/* ---------- モーダル ---------- */
 .modal-overlay{
   position:fixed;inset:0;background:rgba(0,0,0,0.45);
   display:none;align-items:center;justify-content:center;z-index:50;
@@ -415,10 +351,7 @@ input,textarea{font-family:inherit;}
   display:flex;flex-direction:column;
   overflow:hidden;
 }
-.modal-head{
-  padding:16px;border-bottom:1px solid var(--border);
-  display:flex;justify-content:space-between;align-items:center;
-}
+.modal-head{padding:16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
 .modal-head h3{margin:0;font-size:16px;}
 .modal-close{background:none;border:none;font-size:18px;color:var(--sub);}
 .modal-body{padding:14px 16px;overflow-y:auto;flex:1;}
@@ -427,10 +360,7 @@ input,textarea{font-family:inherit;}
   border-radius:10px;margin-bottom:12px;font-size:14px;
   background:var(--bg);color:var(--text);outline:none;
 }
-.user-pick{
-  display:flex;align-items:center;gap:10px;
-  padding:9px 4px;border-bottom:1px solid var(--border);
-}
+.user-pick{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border);}
 .user-pick input{margin-left:auto;}
 .modal-foot{padding:14px 16px;border-top:1px solid var(--border);}
 .modal-foot button{
@@ -438,24 +368,18 @@ input,textarea{font-family:inherit;}
   background:var(--green);color:#fff;font-weight:700;font-size:14.5px;
 }
 
-/* ---------- レスポンシブ ---------- */
 @media (max-width:820px){
   .sidebar{width:100%;min-width:0;}
   .sidebar,.chat-panel{width:100%;}
   #main-screen{position:relative;}
-  #main-screen .sidebar,#main-screen .chat-panel{
-    position:absolute;top:0;left:0;right:0;bottom:0;
-  }
+  #main-screen .sidebar,#main-screen .chat-panel{position:absolute;top:0;left:0;right:0;bottom:0;}
   #main-screen .chat-panel{transform:translateX(100%);transition:transform .18s ease;}
   #main-screen.show-chat .chat-panel{transform:translateX(0);}
   #main-screen.show-chat .sidebar{transform:translateX(-100%);transition:transform .18s ease;}
   .back-btn{display:block;}
   .msg-col{max-width:78%;}
 }
-@media (min-width:821px){
-  .back-btn{display:none;}
-}
-
+@media (min-width:821px){.back-btn{display:none;}}
 .hidden-input{display:none;}
 </style>
 </head>
@@ -465,7 +389,7 @@ input,textarea{font-family:inherit;}
   <div id="auth-screen">
     <div class="auth-box">
       <div class="auth-logo">LINE再現プロジェクト</div>
-      <div class="auth-sub">Cloudflareだけで動くチャットアプリ</div>
+      <div class="auth-sub">Firebase + GitHub Pagesで動くチャットアプリ</div>
       <div class="auth-tabs">
         <button class="auth-tab active" id="tab-login">ログイン</button>
         <button class="auth-tab" id="tab-register">新規登録</button>
@@ -494,8 +418,8 @@ input,textarea{font-family:inherit;}
           <input type="text" id="reg-username" required pattern="[a-z0-9_]{3,20}">
         </div>
         <div class="auth-field">
-          <label>パスワード</label>
-          <input type="password" id="reg-password" required minlength="4">
+          <label>パスワード(6文字以上)</label>
+          <input type="password" id="reg-password" required minlength="6">
         </div>
         <button class="auth-submit" type="submit">登録する</button>
         <div class="auth-error" id="register-error"></div>
@@ -545,837 +469,556 @@ input,textarea{font-family:inherit;}
 
 <input type="file" id="file-input" class="hidden-input">
 
-<script>
-(function(){
-  var state = {
-    me: null,
-    chats: [],
-    currentChatId: null,
-    ws: null,
-    typingTimer: null,
-    selectedUsers: {},
-    lastMessageId: {}
-  };
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  onAuthStateChanged, signOut
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc,
+  query, where, orderBy, limit, onSnapshot, getDocs, serverTimestamp,
+  Timestamp
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getStorage, ref, uploadBytes, getDownloadURL
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
-  function el(id){ return document.getElementById(id); }
-  function escapeHtml(s){
-    return String(s)
-      .split("&").join("&amp;")
-      .split("<").join("&lt;")
-      .split(">").join("&gt;")
-      .split(String.fromCharCode(34)).join("&quot;")
-      .split("'").join("&#39;");
-  }
-  function fmtTime(ts){
-    var d = new Date(ts);
-    var h = d.getHours(); var m = d.getMinutes();
-    return (h<10?"0"+h:h) + ":" + (m<10?"0"+m:m);
-  }
-  function fmtDate(ts){
-    var d = new Date(ts);
-    return d.getFullYear() + "年" + (d.getMonth()+1) + "月" + d.getDate() + "日";
-  }
-  function sameDay(a,b){
-    var da = new Date(a); var db = new Date(b);
-    return da.getFullYear()===db.getFullYear() && da.getMonth()===db.getMonth() && da.getDate()===db.getDate();
-  }
-  function colorFromName(name){
-    var hash = 0;
-    for (var i=0;i<name.length;i++){ hash = name.charCodeAt(i) + ((hash<<5)-hash); }
-    var hue = Math.abs(hash) % 360;
-    return "hsl(" + hue + ",60%,45%)";
-  }
+const FIREBASE_CONFIG = {
+  apiKey: "ここにFirebaseのapiKeyを貼る",
+  authDomain: "ここにauthDomainを貼る",
+  projectId: "ここにprojectIdを貼る",
+  storageBucket: "ここにstorageBucketを貼る",
+  messagingSenderId: "ここにmessagingSenderIdを貼る",
+  appId: "ここにappIdを貼る"
+};
 
-  function api(path, opts){
-    opts = opts || {};
-    opts.credentials = "include";
-    opts.headers = Object.assign({"Content-Type":"application/json"}, opts.headers || {});
-    if (opts.body && typeof opts.body !== "string" && !(opts.body instanceof FormData)){
-      opts.body = JSON.stringify(opts.body);
-    }
-    if (opts.body instanceof FormData){ delete opts.headers["Content-Type"]; }
-    return fetch(path, opts).then(function(r){
-      return r.json().then(function(data){
-        if (!r.ok){ throw data; }
-        return data;
-      });
-    });
-  }
+const EMAIL_DOMAIN = "lineclone-users.app";
 
-  function showAuth(){
-    el("auth-screen").style.display = "flex";
-    el("main-screen").classList.remove("active");
-  }
-  function showMain(){
-    el("auth-screen").style.display = "none";
-    el("main-screen").classList.add("active");
-  }
+const app = initializeApp(FIREBASE_CONFIG);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
 
-  el("tab-login").onclick = function(){
-    el("tab-login").classList.add("active");
-    el("tab-register").classList.remove("active");
-    el("login-form").style.display = "block";
-    el("register-form").style.display = "none";
-  };
-  el("tab-register").onclick = function(){
-    el("tab-register").classList.add("active");
-    el("tab-login").classList.remove("active");
-    el("register-form").style.display = "block";
-    el("login-form").style.display = "none";
-  };
+var state = {
+  me: null,
+  chats: [],
+  currentChatId: null,
+  unsubMessages: null,
+  unsubTyping: null,
+  unsubChat: null,
+  typingTimer: null,
+  selectedUsers: {},
+  lastRenderedDate: null
+};
 
-  el("login-form").onsubmit = function(e){
-    e.preventDefault();
-    el("login-error").textContent = "";
-    api("/api/login", {method:"POST", body:{
-      username: el("login-username").value,
-      password: el("login-password").value
-    }}).then(function(data){
-      state.me = data;
-      onLoggedIn();
-    }).catch(function(err){
-      el("login-error").textContent = "ログインに失敗しました";
-    });
-  };
+function el(id){ return document.getElementById(id); }
 
-  el("register-form").onsubmit = function(e){
-    e.preventDefault();
-    el("register-error").textContent = "";
-    api("/api/register", {method:"POST", body:{
-      username: el("reg-username").value,
-      password: el("reg-password").value,
-      displayName: el("reg-displayname").value
-    }}).then(function(){
-      return api("/api/login", {method:"POST", body:{
-        username: el("reg-username").value,
-        password: el("reg-password").value
-      }});
-    }).then(function(data){
-      state.me = data;
-      onLoggedIn();
-    }).catch(function(err){
-      el("register-error").textContent = "登録に失敗しました(ユーザー名重複の可能性)";
-    });
-  };
-
-  el("logout-btn").onclick = function(){
-    api("/api/logout", {method:"POST"}).then(function(){
-      if (state.ws) state.ws.close();
-      state.me = null;
-      state.currentChatId = null;
-      showAuth();
-    });
-  };
-
-  el("theme-btn").onclick = function(){
-    var current = document.body.getAttribute("data-theme");
-    var next = current === "dark" ? "" : "dark";
-    document.body.setAttribute("data-theme", next);
-    localStorage.setItem("line_clone_theme", next);
-  };
-
-  function onLoggedIn(){
-    el("my-name").textContent = state.me.displayName;
-    showMain();
-    loadChats();
-  }
-
-  function loadChats(){
-    api("/api/chats").then(function(data){
-      state.chats = data.chats;
-      renderChatList();
-    });
-  }
-
-  function renderChatList(filter){
-    var list = el("chat-list");
-    list.innerHTML = "";
-    var chats = state.chats;
-    if (filter){
-      chats = chats.filter(function(c){ return c.name && c.name.toLowerCase().indexOf(filter.toLowerCase()) !== -1; });
-    }
-    if (chats.length === 0){
-      list.innerHTML = "<div class=\"empty-list\">チャットがありません。右上の+から作成してください。</div>";
-      return;
-    }
-    chats.forEach(function(c){
-      var item = document.createElement("div");
-      item.className = "chat-item" + (c.id === state.currentChatId ? " active" : "");
-      var color = c.color || colorFromName(c.name || c.id);
-      var initial = (c.name || "?").slice(0,1);
-      item.innerHTML =
-        "<div class=\"avatar\" style=\"background:" + color + "\">" + escapeHtml(initial) + "</div>" +
-        "<div class=\"chat-item-body\">" +
-          "<div class=\"chat-item-top\">" +
-            "<div class=\"chat-item-name\">" + escapeHtml(c.name || "無名チャット") + "</div>" +
-          "</div>" +
-          "<div class=\"chat-item-preview\">" + (c.isGroup ? "グループ" : "") + "</div>" +
-        "</div>";
-      item.onclick = function(){ openChat(c.id); };
-      list.appendChild(item);
-    });
-  }
-
-  el("chat-search").oninput = function(e){ renderChatList(e.target.value); };
-
-  function openChat(chatId){
-    state.currentChatId = chatId;
-    if (window.innerWidth <= 820){
-      el("main-screen").classList.add("show-chat");
-    }
-    renderChatList(el("chat-search").value);
-    buildChatPanel(chatId);
-    connectWs(chatId);
-  }
-
-  function buildChatPanel(chatId){
-    var chat = state.chats.filter(function(c){ return c.id === chatId; })[0];
-    var panel = el("chat-panel");
-    panel.classList.remove("empty-state");
-    panel.innerHTML =
-      "<div class=\"chat-header\">" +
-        "<button class=\"back-btn\" id=\"back-btn\">←</button>" +
-        "<div>" +
-          "<div class=\"chat-header-name\">" + escapeHtml(chat ? chat.name || "無名チャット" : "") + "</div>" +
-          "<div class=\"chat-header-sub\" id=\"chat-header-sub\"></div>" +
-        "</div>" +
-      "</div>" +
-      "<div class=\"messages\" id=\"messages\"></div>" +
-      "<div class=\"typing-indicator\" id=\"typing-indicator\"></div>" +
-      "<div class=\"composer\">" +
-        "<button id=\"attach-btn\" title=\"ファイル送信\">F</button>" +
-        "<textarea id=\"msg-input\" rows=\"1\" placeholder=\"メッセージを入力\"></textarea>" +
-        "<button class=\"send-btn\" id=\"send-btn\" title=\"送信\">S</button>" +
-      "</div>";
-
-    el("back-btn").onclick = function(){
-      el("main-screen").classList.remove("show-chat");
-    };
-    el("attach-btn").onclick = function(){ el("file-input").click(); };
-    el("send-btn").onclick = sendCurrentMessage;
-    el("msg-input").addEventListener("keydown", function(e){
-      if (e.key === "Enter" && !e.shiftKey){
-        e.preventDefault();
-        sendCurrentMessage();
-      }
-    });
-    el("msg-input").addEventListener("input", function(){
-      notifyTyping();
-    });
-  }
-
-  function notifyTyping(){
-    if (!state.ws || state.ws.readyState !== 1) return;
-    state.ws.send(JSON.stringify({type:"typing"}));
-  }
-
-  function sendCurrentMessage(){
-    var input = el("msg-input");
-    var text = input.value.trim();
-    if (!text) return;
-    if (!state.ws || state.ws.readyState !== 1) return;
-    state.ws.send(JSON.stringify({type:"message", text: text}));
-    input.value = "";
-  }
-
-  el("file-input").onchange = function(){
-    var file = el("file-input").files[0];
-    if (!file) return;
-    var form = new FormData();
-    form.append("file", file);
-    api("/api/upload", {method:"POST", body: form}).then(function(data){
-      if (!state.ws || state.ws.readyState !== 1) return;
-      state.ws.send(JSON.stringify({
-        type:"message",
-        text:"",
-        fileUrl: data.url,
-        fileName: data.name,
-        fileType: data.type
-      }));
-    }).catch(function(){
-      alert("ファイルの送信に失敗しました");
-    });
-    el("file-input").value = "";
-  };
-
-  function connectWs(chatId){
-    if (state.ws){
-      state.ws.onclose = null;
-      state.ws.close();
-    }
-    var proto = location.protocol === "https:" ? "wss:" : "ws:";
-    var ws = new WebSocket(proto + "//" + location.host + "/ws/" + chatId);
-    state.ws = ws;
-
-    ws.onmessage = function(event){
-      var data = JSON.parse(event.data);
-      if (data.type === "history"){
-        renderHistory(data.messages);
-      } else if (data.type === "message"){
-        appendMessage(data.message, true);
-      } else if (data.type === "typing"){
-        showTyping(data.from);
-      } else if (data.type === "presence"){
-        updatePresence(data.from, data.status);
-      } else if (data.type === "read"){
-        markRead(data.from, data.upTo);
-      }
-    };
-    ws.onclose = function(){
-      setTimeout(function(){
-        if (state.currentChatId === chatId){ connectWs(chatId); }
-      }, 1500);
-    };
-  }
-
-  var typingTimeoutHandle = null;
-  function showTyping(from){
-    var indicator = el("typing-indicator");
-    if (!indicator) return;
-    indicator.textContent = from + " が入力中...";
-    if (typingTimeoutHandle) clearTimeout(typingTimeoutHandle);
-    typingTimeoutHandle = setTimeout(function(){ indicator.textContent = ""; }, 3000);
-  }
-
-  function updatePresence(from, status){
-    var sub = el("chat-header-sub");
-    if (sub){ sub.textContent = status === "online" ? "オンライン" : ""; }
-  }
-
-  function markRead(from, upTo){
-    var container = el("messages");
-    if (!container) return;
-    var marks = container.querySelectorAll("[data-msg-id='" + upTo + "'] .read-mark");
-    marks.forEach(function(m){ m.textContent = "既読"; });
-  }
-
-  var lastRenderedDate = null;
-
-  function renderHistory(messages){
-    var container = el("messages");
-    container.innerHTML = "";
-    lastRenderedDate = null;
-    messages.forEach(function(m){ appendMessage(m, false); });
-    container.scrollTop = container.scrollHeight;
-    if (state.ws && state.ws.readyState === 1){
-      state.ws.send(JSON.stringify({type:"read"}));
-    }
-  }
-
-  function appendMessage(m, scroll){
-    var container = el("messages");
-    if (!container) return;
-    if (lastRenderedDate === null || !sameDay(lastRenderedDate, m.createdAt)){
-      var sep = document.createElement("div");
-      sep.className = "date-sep";
-      sep.innerHTML = "<span>" + fmtDate(m.createdAt) + "</span>";
-      container.appendChild(sep);
-      lastRenderedDate = m.createdAt;
-    }
-    var mine = m.from === state.me.username;
-    var row = document.createElement("div");
-    row.className = "msg-row" + (mine ? " mine" : "");
-    row.setAttribute("data-msg-id", m.id);
-
-    var avatarHtml = "";
-    if (!mine){
-      avatarHtml = "<div class=\"msg-avatar\" style=\"background:" + colorFromName(m.from) + "\">" + escapeHtml(m.from.slice(0,1)) + "</div>";
-    }
-
-    var bodyHtml = "";
-    if (m.fileUrl){
-      if (m.fileType && m.fileType.indexOf("image/") === 0){
-        bodyHtml = "<a href=\"" + m.fileUrl + "\" target=\"_blank\"><img src=\"" + m.fileUrl + "\"></a>";
-      } else {
-        bodyHtml = "<a class=\"file-chip\" href=\"" + m.fileUrl + "\" target=\"_blank\">" + escapeHtml(m.fileName || "ファイル") + "</a>";
-      }
-    } else {
-      bodyHtml = escapeHtml(m.text);
-    }
-
-    var readMarkHtml = mine ? "<span class=\"read-mark\"></span>" : "";
-
-    row.innerHTML =
-      avatarHtml +
-      "<div class=\"msg-col\">" +
-        (!mine ? "<div class=\"msg-sender\">" + escapeHtml(m.from) + "</div>" : "") +
-        "<div class=\"bubble\">" + bodyHtml + "</div>" +
-        "<div class=\"msg-meta\">" + fmtTime(m.createdAt) + readMarkHtml + "</div>" +
-      "</div>";
-    container.appendChild(row);
-    if (scroll !== false){ container.scrollTop = container.scrollHeight; }
-  }
-
-  el("new-chat-btn").onclick = function(){
-    state.selectedUsers = {};
-    el("user-search-input").value = "";
-    el("user-search-results").innerHTML = "";
-    el("group-name-input").style.display = "none";
-    el("new-chat-modal").classList.add("active");
-  };
-  el("close-new-chat").onclick = function(){
-    el("new-chat-modal").classList.remove("active");
-  };
-
-  var userSearchTimer = null;
-  el("user-search-input").oninput = function(){
-    var q = el("user-search-input").value;
-    if (userSearchTimer) clearTimeout(userSearchTimer);
-    userSearchTimer = setTimeout(function(){
-      api("/api/users?q=" + encodeURIComponent(q)).then(function(data){
-        renderUserSearchResults(data.users);
-      });
-    }, 250);
-  };
-
-  function renderUserSearchResults(users){
-    var container = el("user-search-results");
-    container.innerHTML = "";
-    users.forEach(function(u){
-      var row = document.createElement("div");
-      row.className = "user-pick";
-      var checked = state.selectedUsers[u.username] ? "checked" : "";
-      row.innerHTML =
-        "<div class=\"avatar\" style=\"width:34px;height:34px;font-size:13px;background:" + u.color + "\">" + escapeHtml(u.displayName.slice(0,1)) + "</div>" +
-        "<div>" + escapeHtml(u.displayName) + "</div>" +
-        "<input type=\"checkbox\" " + checked + " data-username=\"" + u.username + "\">";
-      row.querySelector("input").onchange = function(e){
-        if (e.target.checked){ state.selectedUsers[u.username] = true; }
-        else { delete state.selectedUsers[u.username]; }
-        var count = Object.keys(state.selectedUsers).length;
-        el("group-name-input").style.display = count > 1 ? "block" : "none";
-      };
-      container.appendChild(row);
-    });
-  }
-
-  el("create-chat-confirm").onclick = function(){
-    var members = Object.keys(state.selectedUsers);
-    if (members.length === 0) return;
-    var body = {members: members};
-    if (members.length > 1){
-      body.forceGroup = true;
-      body.name = el("group-name-input").value || members.join(", ");
-    }
-    api("/api/chats", {method:"POST", body: body}).then(function(data){
-      el("new-chat-modal").classList.remove("active");
-      loadChats().then ? null : null;
-      loadChats();
-      setTimeout(function(){ openChat(data.chatId); }, 200);
-    });
-  };
-
-  el("new-chat-modal").onclick = function(e){
-    if (e.target === el("new-chat-modal")){ el("new-chat-modal").classList.remove("active"); }
-  };
-
-  var savedTheme = localStorage.getItem("line_clone_theme");
-  if (savedTheme){ document.body.setAttribute("data-theme", savedTheme); }
-
-  api("/api/me").then(function(data){
-    state.me = data;
-    onLoggedIn();
-  }).catch(function(){
-    showAuth();
-  });
-})();
-</script>
-</body>
-</html>`;
-
-function bytesToHex(bytes) {
-  var out = "";
-  for (var i = 0; i < bytes.length; i++) {
-    out += bytes[i].toString(16).padStart(2, "0");
-  }
-  return out;
+function escapeHtml(s){
+  return String(s)
+    .split("&").join("&amp;")
+    .split("<").join("&lt;")
+    .split(">").join("&gt;")
+    .split(String.fromCharCode(34)).join("&quot;")
+    .split("'").join("&#39;");
 }
 
-function hexToBytes(hex) {
-  var arr = new Uint8Array(hex.length / 2);
-  for (var i = 0; i < arr.length; i++) {
-    arr[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return arr;
+function fmtTime(ms){
+  var d = new Date(ms);
+  var h = d.getHours(); var m = d.getMinutes();
+  return (h<10?"0"+h:h) + ":" + (m<10?"0"+m:m);
 }
 
-async function pbkdf2Hash(password, saltBytes) {
-  var enc = new TextEncoder();
-  var keyMaterial = await crypto.subtle.importKey(
-    "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveBits"]
-  );
-  var bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: saltBytes, iterations: 100000, hash: "SHA-256" },
-    keyMaterial, 256
-  );
-  return bytesToHex(new Uint8Array(bits));
+function fmtDate(ms){
+  var d = new Date(ms);
+  return d.getFullYear() + "年" + (d.getMonth()+1) + "月" + d.getDate() + "日";
 }
 
-function jsonResponse(obj, status, extraHeaders) {
-  var headers = Object.assign({ "content-type": "application/json;charset=UTF-8" }, extraHeaders || {});
-  return new Response(JSON.stringify(obj), { status: status || 200, headers: headers });
+function sameDay(a,b){
+  var da = new Date(a); var db2 = new Date(b);
+  return da.getFullYear()===db2.getFullYear() && da.getMonth()===db2.getMonth() && da.getDate()===db2.getDate();
 }
 
-function parseCookies(request) {
-  var header = request.headers.get("Cookie") || "";
-  var out = {};
-  header.split(";").forEach(function (part) {
-    var idx = part.indexOf("=");
-    if (idx === -1) return;
-    var k = part.slice(0, idx).trim();
-    var v = part.slice(idx + 1).trim();
-    out[k] = decodeURIComponent(v);
-  });
-  return out;
-}
-
-async function getSessionUser(request, env) {
-  var cookies = parseCookies(request);
-  var token = cookies["session"];
-  if (!token) return null;
-  var username = await env.SESSIONS.get("sess:" + token);
-  return username;
-}
-
-function avatarColorFor(name) {
+function colorFromName(name){
   var hash = 0;
-  for (var i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
+  for (var i=0;i<name.length;i++){ hash = name.charCodeAt(i) + ((hash<<5)-hash); }
   var hue = Math.abs(hash) % 360;
   return "hsl(" + hue + ",60%,45%)";
 }
 
-async function handleRegister(request, env) {
-  var body = await request.json().catch(function () { return null; });
-  if (!body || !body.username || !body.password || !body.displayName) {
-    return jsonResponse({ error: "invalid_input" }, 400);
+function toMillis(ts){
+  if (!ts) return Date.now();
+  if (ts.toMillis) return ts.toMillis();
+  return Date.now();
+}
+
+function showAuth(){
+  el("auth-screen").style.display = "flex";
+  el("main-screen").classList.remove("active");
+}
+function showMain(){
+  el("auth-screen").style.display = "none";
+  el("main-screen").classList.add("active");
+}
+
+el("tab-login").onclick = function(){
+  el("tab-login").classList.add("active");
+  el("tab-register").classList.remove("active");
+  el("login-form").style.display = "block";
+  el("register-form").style.display = "none";
+};
+el("tab-register").onclick = function(){
+  el("tab-register").classList.add("active");
+  el("tab-login").classList.remove("active");
+  el("register-form").style.display = "block";
+  el("login-form").style.display = "none";
+};
+
+function usernameToEmail(username){
+  return username + "@" + EMAIL_DOMAIN;
+}
+
+el("login-form").onsubmit = function(e){
+  e.preventDefault();
+  el("login-error").textContent = "";
+  var username = el("login-username").value.trim().toLowerCase();
+  var password = el("login-password").value;
+  signInWithEmailAndPassword(auth, usernameToEmail(username), password).catch(function(){
+    el("login-error").textContent = "ログインに失敗しました";
+  });
+};
+
+el("register-form").onsubmit = function(e){
+  e.preventDefault();
+  el("register-error").textContent = "";
+  var username = el("reg-username").value.trim().toLowerCase();
+  var displayName = el("reg-displayname").value.trim();
+  var password = el("reg-password").value;
+  if (!/^[a-z0-9_]{3,20}$/.test(username)){
+    el("register-error").textContent = "ユーザー名の形式が正しくありません";
+    return;
   }
-  var username = String(body.username).trim().toLowerCase();
-  if (!/^[a-z0-9_]{3,20}$/.test(username)) {
-    return jsonResponse({ error: "invalid_username" }, 400);
+  getDoc(doc(db,"usernames",username)).then(function(snap){
+    if (snap.exists()){
+      el("register-error").textContent = "そのユーザー名は既に使われています";
+      return;
+    }
+    return createUserWithEmailAndPassword(auth, usernameToEmail(username), password).then(function(cred){
+      var uid = cred.user.uid;
+      var color = colorFromName(username);
+      return setDoc(doc(db,"usernames",username), {uid: uid}).then(function(){
+        return setDoc(doc(db,"profiles",uid), {
+          username: username,
+          displayName: displayName,
+          color: color,
+          createdAt: serverTimestamp()
+        });
+      });
+    });
+  }).catch(function(){
+    el("register-error").textContent = "登録に失敗しました";
+  });
+};
+
+el("logout-btn").onclick = function(){
+  cleanupChatListeners();
+  signOut(auth);
+};
+
+el("theme-btn").onclick = function(){
+  var current = document.body.getAttribute("data-theme");
+  var next = current === "dark" ? "" : "dark";
+  document.body.setAttribute("data-theme", next);
+  localStorage.setItem("line_clone_theme", next);
+};
+
+var savedTheme = localStorage.getItem("line_clone_theme");
+if (savedTheme){ document.body.setAttribute("data-theme", savedTheme); }
+
+onAuthStateChanged(auth, function(user){
+  if (!user){
+    state.me = null;
+    showAuth();
+    return;
   }
-  var exists = await env.USERS.get("user:" + username);
-  if (exists) return jsonResponse({ error: "username_taken" }, 409);
-  var saltBytes = crypto.getRandomValues(new Uint8Array(16));
-  var salt = bytesToHex(saltBytes);
-  var hash = await pbkdf2Hash(body.password, saltBytes);
-  var record = {
-    username: username,
-    displayName: String(body.displayName).slice(0, 30),
-    salt: salt,
-    hash: hash,
-    color: avatarColorFor(username),
-    createdAt: Date.now()
+  getDoc(doc(db,"profiles",user.uid)).then(function(snap){
+    if (!snap.exists()) return;
+    var data = snap.data();
+    state.me = {
+      uid: user.uid,
+      username: data.username,
+      displayName: data.displayName,
+      color: data.color
+    };
+    el("my-name").textContent = state.me.displayName;
+    showMain();
+    loadChats();
+  });
+});
+
+function loadChats(){
+  var q = query(collection(db,"chats"), where("members","array-contains",state.me.uid));
+  onSnapshot(q, function(snapshot){
+    var chats = [];
+    snapshot.forEach(function(docSnap){
+      var data = docSnap.data();
+      chats.push({id: docSnap.id, isGroup: data.isGroup, name: data.name, members: data.members});
+    });
+    resolveChatNames(chats).then(function(resolved){
+      state.chats = resolved;
+      renderChatList(el("chat-search").value);
+    });
+  });
+}
+
+function resolveChatNames(chats){
+  var promises = chats.map(function(c){
+    if (c.isGroup){ return Promise.resolve(c); }
+    var otherUid = c.members.filter(function(m){ return m !== state.me.uid; })[0];
+    if (!otherUid){ return Promise.resolve(c); }
+    return getDoc(doc(db,"profiles",otherUid)).then(function(snap){
+      if (snap.exists()){
+        var data = snap.data();
+        c.name = data.displayName;
+        c.color = data.color;
+      }
+      return c;
+    });
+  });
+  return Promise.all(promises);
+}
+
+function renderChatList(filter){
+  var list = el("chat-list");
+  list.innerHTML = "";
+  var chats = state.chats;
+  if (filter){
+    chats = chats.filter(function(c){ return c.name && c.name.toLowerCase().indexOf(filter.toLowerCase()) !== -1; });
+  }
+  if (chats.length === 0){
+    list.innerHTML = "<div class=\"empty-list\">チャットがありません。右上の+から作成してください。</div>";
+    return;
+  }
+  chats.forEach(function(c){
+    var item = document.createElement("div");
+    item.className = "chat-item" + (c.id === state.currentChatId ? " active" : "");
+    var color = c.color || colorFromName(c.name || c.id);
+    var initial = (c.name || "?").slice(0,1);
+    item.innerHTML =
+      "<div class=\"avatar\" style=\"background:" + color + "\">" + escapeHtml(initial) + "</div>" +
+      "<div class=\"chat-item-body\">" +
+        "<div class=\"chat-item-top\">" +
+          "<div class=\"chat-item-name\">" + escapeHtml(c.name || "無名チャット") + "</div>" +
+        "</div>" +
+        "<div class=\"chat-item-preview\">" + (c.isGroup ? "グループ" : "") + "</div>" +
+      "</div>";
+    item.onclick = function(){ openChat(c.id); };
+    list.appendChild(item);
+  });
+}
+
+el("chat-search").oninput = function(e){ renderChatList(e.target.value); };
+
+function cleanupChatListeners(){
+  if (state.unsubMessages){ state.unsubMessages(); state.unsubMessages = null; }
+  if (state.unsubTyping){ state.unsubTyping(); state.unsubTyping = null; }
+  if (state.unsubChat){ state.unsubChat(); state.unsubChat = null; }
+}
+
+function openChat(chatId){
+  cleanupChatListeners();
+  state.currentChatId = chatId;
+  state.lastRenderedDate = null;
+  if (window.innerWidth <= 820){
+    el("main-screen").classList.add("show-chat");
+  }
+  renderChatList(el("chat-search").value);
+  buildChatPanel(chatId);
+  listenMessages(chatId);
+  listenTyping(chatId);
+  listenChatDoc(chatId);
+}
+
+function buildChatPanel(chatId){
+  var chat = state.chats.filter(function(c){ return c.id === chatId; })[0];
+  var panel = el("chat-panel");
+  panel.classList.remove("empty-state");
+  panel.innerHTML =
+    "<div class=\"chat-header\">" +
+      "<button class=\"back-btn\" id=\"back-btn\">←</button>" +
+      "<div>" +
+        "<div class=\"chat-header-name\">" + escapeHtml(chat ? chat.name || "無名チャット" : "") + "</div>" +
+        "<div class=\"chat-header-sub\" id=\"chat-header-sub\"></div>" +
+      "</div>" +
+    "</div>" +
+    "<div class=\"messages\" id=\"messages\"></div>" +
+    "<div class=\"typing-indicator\" id=\"typing-indicator\"></div>" +
+    "<div class=\"composer\">" +
+      "<button id=\"attach-btn\" title=\"ファイル送信\">F</button>" +
+      "<textarea id=\"msg-input\" rows=\"1\" placeholder=\"メッセージを入力\"></textarea>" +
+      "<button class=\"send-btn\" id=\"send-btn\" title=\"送信\">S</button>" +
+    "</div>";
+
+  el("back-btn").onclick = function(){
+    el("main-screen").classList.remove("show-chat");
   };
-  await env.USERS.put("user:" + username, JSON.stringify(record));
-  return jsonResponse({ ok: true });
+  el("attach-btn").onclick = function(){ el("file-input").click(); };
+  el("send-btn").onclick = sendCurrentMessage;
+  el("msg-input").addEventListener("keydown", function(e){
+    if (e.key === "Enter" && !e.shiftKey){
+      e.preventDefault();
+      sendCurrentMessage();
+    }
+  });
+  el("msg-input").addEventListener("input", function(){
+    notifyTyping(chatId);
+  });
 }
 
-async function handleLogin(request, env) {
-  var body = await request.json().catch(function () { return null; });
-  if (!body || !body.username || !body.password) return jsonResponse({ error: "invalid_input" }, 400);
-  var username = String(body.username).trim().toLowerCase();
-  var raw = await env.USERS.get("user:" + username);
-  if (!raw) return jsonResponse({ error: "invalid_credentials" }, 401);
-  var record = JSON.parse(raw);
-  var saltBytes = hexToBytes(record.salt);
-  var hash = await pbkdf2Hash(body.password, saltBytes);
-  if (hash !== record.hash) return jsonResponse({ error: "invalid_credentials" }, 401);
-  var token = bytesToHex(crypto.getRandomValues(new Uint8Array(24)));
-  await env.SESSIONS.put("sess:" + token, username, { expirationTtl: 60 * 60 * 24 * 30 });
-  var headers = { "Set-Cookie": "session=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" };
-  return jsonResponse({ ok: true, username: username, displayName: record.displayName, color: record.color }, 200, headers);
+function notifyTyping(chatId){
+  setDoc(doc(db,"chats",chatId,"typing",state.me.uid), {
+    displayName: state.me.displayName,
+    updatedAt: serverTimestamp()
+  });
 }
 
-async function handleLogout(request, env) {
-  var cookies = parseCookies(request);
-  var token = cookies["session"];
-  if (token) await env.SESSIONS.delete("sess:" + token);
-  return jsonResponse({ ok: true }, 200, { "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0" });
+function sendCurrentMessage(){
+  var input = el("msg-input");
+  var text = input.value.trim();
+  if (!text || !state.currentChatId) return;
+  addDoc(collection(db,"chats",state.currentChatId,"messages"), {
+    from: state.me.uid,
+    fromName: state.me.displayName,
+    text: text,
+    fileUrl: null,
+    fileName: null,
+    fileType: null,
+    createdAt: serverTimestamp()
+  });
+  input.value = "";
 }
 
-async function handleMe(request, env) {
-  var username = await getSessionUser(request, env);
-  if (!username) return jsonResponse({ error: "unauthorized" }, 401);
-  var raw = await env.USERS.get("user:" + username);
-  if (!raw) return jsonResponse({ error: "unauthorized" }, 401);
-  var record = JSON.parse(raw);
-  return jsonResponse({ username: record.username, displayName: record.displayName, color: record.color });
+el("file-input").onchange = function(){
+  var file = el("file-input").files[0];
+  if (!file || !state.currentChatId) return;
+  var path = "files/" + state.me.uid + "/" + Date.now() + "_" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
+  var fileRef = ref(storage, path);
+  uploadBytes(fileRef, file).then(function(){
+    return getDownloadURL(fileRef);
+  }).then(function(url){
+    addDoc(collection(db,"chats",state.currentChatId,"messages"), {
+      from: state.me.uid,
+      fromName: state.me.displayName,
+      text: "",
+      fileUrl: url,
+      fileName: file.name,
+      fileType: file.type,
+      createdAt: serverTimestamp()
+    });
+  }).catch(function(){
+    alert("ファイルの送信に失敗しました");
+  });
+  el("file-input").value = "";
+};
+
+function listenMessages(chatId){
+  var q = query(collection(db,"chats",chatId,"messages"), orderBy("createdAt"), limit(200));
+  state.unsubMessages = onSnapshot(q, function(snapshot){
+    var container = el("messages");
+    if (!container) return;
+    container.innerHTML = "";
+    state.lastRenderedDate = null;
+    snapshot.forEach(function(docSnap){
+      var m = docSnap.data();
+      appendMessage({
+        id: docSnap.id,
+        from: m.from,
+        fromName: m.fromName,
+        text: m.text,
+        fileUrl: m.fileUrl,
+        fileName: m.fileName,
+        fileType: m.fileType,
+        createdAt: toMillis(m.createdAt)
+      });
+    });
+    container.scrollTop = container.scrollHeight;
+    markRead(chatId);
+  });
 }
 
-async function handleUserSearch(request, env) {
-  var username = await getSessionUser(request, env);
-  if (!username) return jsonResponse({ error: "unauthorized" }, 401);
-  var url = new URL(request.url);
-  var q = (url.searchParams.get("q") || "").trim().toLowerCase();
-  var list = await env.USERS.list({ prefix: "user:" });
-  var results = [];
-  for (var i = 0; i < list.keys.length; i++) {
-    var key = list.keys[i];
-    var uname = key.name.slice("user:".length);
-    if (uname === username) continue;
-    if (q && uname.indexOf(q) === -1) continue;
-    var raw = await env.USERS.get(key.name);
-    var record = JSON.parse(raw);
-    results.push({ username: record.username, displayName: record.displayName, color: record.color });
-    if (results.length >= 20) break;
+function listenTyping(chatId){
+  state.unsubTyping = onSnapshot(collection(db,"chats",chatId,"typing"), function(snapshot){
+    var indicator = el("typing-indicator");
+    if (!indicator) return;
+    var names = [];
+    var now = Date.now();
+    snapshot.forEach(function(docSnap){
+      if (docSnap.id === state.me.uid) return;
+      var data = docSnap.data();
+      var updated = toMillis(data.updatedAt);
+      if (now - updated < 4000){ names.push(data.displayName); }
+    });
+    indicator.textContent = names.length ? names.join("、") + " が入力中..." : "";
+  });
+}
+
+function listenChatDoc(chatId){
+  state.unsubChat = onSnapshot(doc(db,"chats",chatId), function(snap){
+    if (!snap.exists()) return;
+    var data = snap.data();
+    var readBy = data.readBy || {};
+    var container = el("messages");
+    if (!container) return;
+    Object.keys(readBy).forEach(function(uid){
+      if (uid === state.me.uid) return;
+      var upToMs = toMillis(readBy[uid]);
+      var rows = container.querySelectorAll(".msg-row.mine");
+      rows.forEach(function(row){
+        var rowTime = Number(row.getAttribute("data-time") || 0);
+        if (rowTime && rowTime <= upToMs){
+          var mark = row.querySelector(".read-mark");
+          if (mark) mark.textContent = "既読";
+        }
+      });
+    });
+  });
+}
+
+function markRead(chatId){
+  var patch = {};
+  patch["readBy." + state.me.uid] = serverTimestamp();
+  updateDoc(doc(db,"chats",chatId), patch).catch(function(){});
+}
+
+function appendMessage(m){
+  var container = el("messages");
+  if (!container) return;
+  if (state.lastRenderedDate === null || !sameDay(state.lastRenderedDate, m.createdAt)){
+    var sep = document.createElement("div");
+    sep.className = "date-sep";
+    sep.innerHTML = "<span>" + fmtDate(m.createdAt) + "</span>";
+    container.appendChild(sep);
+    state.lastRenderedDate = m.createdAt;
   }
-  return jsonResponse({ users: results });
+  var mine = m.from === state.me.uid;
+  var row = document.createElement("div");
+  row.className = "msg-row" + (mine ? " mine" : "");
+  row.setAttribute("data-time", String(m.createdAt));
+
+  var avatarHtml = "";
+  if (!mine){
+    avatarHtml = "<div class=\"msg-avatar\" style=\"background:" + colorFromName(m.fromName || "?") + "\">" + escapeHtml((m.fromName||"?").slice(0,1)) + "</div>";
+  }
+
+  var bodyHtml = "";
+  if (m.fileUrl){
+    if (m.fileType && m.fileType.indexOf("image/") === 0){
+      bodyHtml = "<a href=\"" + m.fileUrl + "\" target=\"_blank\"><img src=\"" + m.fileUrl + "\"></a>";
+    } else {
+      bodyHtml = "<a class=\"file-chip\" href=\"" + m.fileUrl + "\" target=\"_blank\">" + escapeHtml(m.fileName || "ファイル") + "</a>";
+    }
+  } else {
+    bodyHtml = escapeHtml(m.text);
+  }
+
+  var readMarkHtml = mine ? "<span class=\"read-mark\"></span>" : "";
+
+  row.innerHTML =
+    avatarHtml +
+    "<div class=\"msg-col\">" +
+      (!mine ? "<div class=\"msg-sender\">" + escapeHtml(m.fromName || "") + "</div>" : "") +
+      "<div class=\"bubble\">" + bodyHtml + "</div>" +
+      "<div class=\"msg-meta\">" + fmtTime(m.createdAt) + readMarkHtml + "</div>" +
+    "</div>";
+  container.appendChild(row);
 }
 
-function dmChatId(a, b) {
-  var pair = [a, b].sort();
+el("new-chat-btn").onclick = function(){
+  state.selectedUsers = {};
+  el("user-search-input").value = "";
+  el("user-search-results").innerHTML = "";
+  el("group-name-input").style.display = "none";
+  el("new-chat-modal").classList.add("active");
+};
+el("close-new-chat").onclick = function(){
+  el("new-chat-modal").classList.remove("active");
+};
+
+var userSearchTimer = null;
+el("user-search-input").oninput = function(){
+  var q = el("user-search-input").value.trim().toLowerCase();
+  if (userSearchTimer) clearTimeout(userSearchTimer);
+  userSearchTimer = setTimeout(function(){
+    getDocs(collection(db,"profiles")).then(function(snapshot){
+      var results = [];
+      snapshot.forEach(function(docSnap){
+        var data = docSnap.data();
+        if (docSnap.id === state.me.uid) return;
+        if (q && data.username.indexOf(q) === -1) return;
+        results.push({uid: docSnap.id, username: data.username, displayName: data.displayName, color: data.color});
+      });
+      renderUserSearchResults(results.slice(0,20));
+    });
+  }, 250);
+};
+
+function renderUserSearchResults(users){
+  var container = el("user-search-results");
+  container.innerHTML = "";
+  users.forEach(function(u){
+    var row = document.createElement("div");
+    row.className = "user-pick";
+    var checked = state.selectedUsers[u.uid] ? "checked" : "";
+    row.innerHTML =
+      "<div class=\"avatar\" style=\"width:34px;height:34px;font-size:13px;background:" + u.color + "\">" + escapeHtml(u.displayName.slice(0,1)) + "</div>" +
+      "<div>" + escapeHtml(u.displayName) + "</div>" +
+      "<input type=\"checkbox\" " + checked + " data-uid=\"" + u.uid + "\">";
+    row.querySelector("input").onchange = function(e){
+      if (e.target.checked){ state.selectedUsers[u.uid] = true; }
+      else { delete state.selectedUsers[u.uid]; }
+      var count = Object.keys(state.selectedUsers).length;
+      el("group-name-input").style.display = count > 1 ? "block" : "none";
+    };
+    container.appendChild(row);
+  });
+}
+
+function dmChatId(a,b){
+  var pair = [a,b].sort();
   return "dm_" + pair[0] + "_" + pair[1];
 }
 
-async function addChatToUser(env, username, chatId) {
-  var raw = await env.CHATS.get("userchats:" + username);
-  var ids = raw ? JSON.parse(raw) : [];
-  if (ids.indexOf(chatId) === -1) {
-    ids.push(chatId);
-    await env.CHATS.put("userchats:" + username, JSON.stringify(ids));
-  }
-}
-
-async function handleListChats(request, env) {
-  var username = await getSessionUser(request, env);
-  if (!username) return jsonResponse({ error: "unauthorized" }, 401);
-  var raw = await env.CHATS.get("userchats:" + username);
-  var ids = raw ? JSON.parse(raw) : [];
-  var chats = [];
-  for (var i = 0; i < ids.length; i++) {
-    var craw = await env.CHATS.get("chat:" + ids[i]);
-    if (!craw) continue;
-    var chat = JSON.parse(craw);
-    var name = chat.name;
-    var color = null;
-    if (!chat.isGroup) {
-      var other = chat.members.filter(function (m) { return m !== username; })[0];
-      var oraw = other ? await env.USERS.get("user:" + other) : null;
-      if (oraw) {
-        var orecord = JSON.parse(oraw);
-        name = orecord.displayName;
-        color = orecord.color;
-      }
+el("create-chat-confirm").onclick = function(){
+  var uids = Object.keys(state.selectedUsers);
+  if (uids.length === 0) return;
+  var members = Array.from(new Set([state.me.uid].concat(uids)));
+  var isGroup = members.length > 2;
+  var chatId = isGroup
+    ? ("grp_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8))
+    : dmChatId(members[0], members[1]);
+  var name = isGroup ? (el("group-name-input").value.trim() || "グループ") : null;
+  getDoc(doc(db,"chats",chatId)).then(function(snap){
+    if (snap.exists()){
+      el("new-chat-modal").classList.remove("active");
+      openChat(chatId);
+      return;
     }
-    chats.push({ id: chat.id, name: name, isGroup: chat.isGroup, members: chat.members, color: color });
-  }
-  return jsonResponse({ chats: chats });
-}
-
-async function handleCreateChat(request, env) {
-  var username = await getSessionUser(request, env);
-  if (!username) return jsonResponse({ error: "unauthorized" }, 401);
-  var body = await request.json().catch(function () { return null; });
-  if (!body || !Array.isArray(body.members) || body.members.length === 0) {
-    return jsonResponse({ error: "invalid_input" }, 400);
-  }
-  var memberSet = {};
-  memberSet[username] = true;
-  body.members.forEach(function (m) { memberSet[String(m).toLowerCase()] = true; });
-  var members = Object.keys(memberSet);
-  for (var i = 0; i < members.length; i++) {
-    var exists = await env.USERS.get("user:" + members[i]);
-    if (!exists) return jsonResponse({ error: "user_not_found", user: members[i] }, 404);
-  }
-  var chatId, isGroup, name;
-  if (members.length === 2 && !body.forceGroup) {
-    isGroup = false;
-    chatId = dmChatId(members[0], members[1]);
-    name = null;
-  } else {
-    isGroup = true;
-    chatId = "grp_" + bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
-    name = String(body.name || members.join(", ")).slice(0, 40);
-  }
-  var existing = await env.CHATS.get("chat:" + chatId);
-  if (!existing) {
-    var chat = { id: chatId, isGroup: isGroup, name: name, members: members, createdAt: Date.now() };
-    await env.CHATS.put("chat:" + chatId, JSON.stringify(chat));
-    for (var j = 0; j < members.length; j++) {
-      await addChatToUser(env, members[j], chatId);
-    }
-  }
-  return jsonResponse({ ok: true, chatId: chatId });
-}
-
-async function verifyMembership(env, username, chatId) {
-  var raw = await env.CHATS.get("chat:" + chatId);
-  if (!raw) return false;
-  var chat = JSON.parse(raw);
-  return chat.members.indexOf(username) !== -1;
-}
-
-async function handleChatHistory(request, env, chatId) {
-  var username = await getSessionUser(request, env);
-  if (!username) return jsonResponse({ error: "unauthorized" }, 401);
-  var ok = await verifyMembership(env, username, chatId);
-  if (!ok) return jsonResponse({ error: "forbidden" }, 403);
-  var id = env.CHATROOM.idFromName(chatId);
-  var stub = env.CHATROOM.get(id);
-  return stub.fetch("https://internal/history");
-}
-
-async function handleWsProxy(request, env, chatId) {
-  var username = await getSessionUser(request, env);
-  if (!username) return new Response("unauthorized", { status: 401 });
-  var ok = await verifyMembership(env, username, chatId);
-  if (!ok) return new Response("forbidden", { status: 403 });
-  var id = env.CHATROOM.idFromName(chatId);
-  var stub = env.CHATROOM.get(id);
-  var internalUrl = "https://internal/websocket?user=" + encodeURIComponent(username);
-  return stub.fetch(internalUrl, request);
-}
-
-async function handleUpload(request, env) {
-  var username = await getSessionUser(request, env);
-  if (!username) return jsonResponse({ error: "unauthorized" }, 401);
-  var form = await request.formData().catch(function () { return null; });
-  if (!form) return jsonResponse({ error: "invalid_input" }, 400);
-  var file = form.get("file");
-  if (!file || typeof file === "string") return jsonResponse({ error: "no_file" }, 400);
-  if (file.size > 25 * 1024 * 1024) return jsonResponse({ error: "file_too_large" }, 400);
-  var safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  var key = bytesToHex(crypto.getRandomValues(new Uint8Array(16))) + "_" + safeName;
-  await env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" } });
-  return jsonResponse({ url: "/files/" + encodeURIComponent(key), name: file.name, type: file.type });
-}
-
-async function handleFileGet(request, env, key) {
-  var object = await env.FILES.get(key);
-  if (!object) return new Response("not found", { status: 404 });
-  var headers = new Headers();
-  object.writeHttpMetadata(headers);
-  headers.set("etag", object.httpEtag);
-  return new Response(object.body, { headers: headers });
-}
-
-export class ChatRoom {
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-    this.sessions = new Map();
-    this.messages = [];
-    var self = this;
-    this.state.blockConcurrencyWhile(async function () {
-      var stored = await self.state.storage.get("messages");
-      self.messages = stored || [];
+    return setDoc(doc(db,"chats",chatId), {
+      members: members,
+      isGroup: isGroup,
+      name: name,
+      readBy: {},
+      createdAt: serverTimestamp()
+    }).then(function(){
+      el("new-chat-modal").classList.remove("active");
+      openChat(chatId);
     });
-  }
-
-  async fetch(request) {
-    var url = new URL(request.url);
-    if (url.pathname === "/websocket") {
-      return this.handleWebsocket(request, url);
-    }
-    if (url.pathname === "/history") {
-      return jsonResponse({ messages: this.messages.slice(-200) });
-    }
-    return new Response("not found", { status: 404 });
-  }
-
-  handleWebsocket(request, url) {
-    var username = url.searchParams.get("user");
-    if (!username) return new Response("unauthorized", { status: 401 });
-    var pair = new WebSocketPair();
-    var client = pair[0];
-    var server = pair[1];
-    server.accept();
-    this.sessions.set(server, { username: username });
-    server.send(JSON.stringify({ type: "history", messages: this.messages.slice(-200) }));
-    this.broadcast({ type: "presence", from: username, status: "online" }, server);
-
-    var self = this;
-    server.addEventListener("message", async function (event) {
-      var data;
-      try { data = JSON.parse(event.data); } catch (e) { return; }
-      if (data.type === "message") {
-        var msg = {
-          id: crypto.randomUUID(),
-          from: username,
-          text: data.text || "",
-          fileUrl: data.fileUrl || null,
-          fileName: data.fileName || null,
-          fileType: data.fileType || null,
-          createdAt: Date.now()
-        };
-        self.messages.push(msg);
-        if (self.messages.length > 500) self.messages.shift();
-        await self.state.storage.put("messages", self.messages);
-        self.broadcast({ type: "message", message: msg });
-      } else if (data.type === "typing") {
-        self.broadcast({ type: "typing", from: username }, server);
-      } else if (data.type === "read") {
-        var upTo = self.messages.length ? self.messages[self.messages.length - 1].id : null;
-        await self.state.storage.put("read:" + username, upTo);
-        self.broadcast({ type: "read", from: username, upTo: upTo });
-      }
-    });
-
-    server.addEventListener("close", function () {
-      self.sessions.delete(server);
-      self.broadcast({ type: "presence", from: username, status: "offline" }, null);
-    });
-
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
-  broadcast(data, exclude) {
-    var payload = JSON.stringify(data);
-    var self = this;
-    this.sessions.forEach(function (info, ws) {
-      if (ws === exclude) return;
-      try { ws.send(payload); } catch (e) { self.sessions.delete(ws); }
-    });
-  }
-}
-
-export default {
-  async fetch(request, env, ctx) {
-    var url = new URL(request.url);
-    var path = url.pathname;
-
-    if (path === "/" && request.method === "GET") {
-      return new Response(HTML_PAGE, { headers: { "content-type": "text/html;charset=UTF-8" } });
-    }
-    if (path === "/api/register" && request.method === "POST") {
-      return handleRegister(request, env);
-    }
-    if (path === "/api/login" && request.method === "POST") {
-      return handleLogin(request, env);
-    }
-    if (path === "/api/logout" && request.method === "POST") {
-      return handleLogout(request, env);
-    }
-    if (path === "/api/me" && request.method === "GET") {
-      return handleMe(request, env);
-    }
-    if (path === "/api/users" && request.method === "GET") {
-      return handleUserSearch(request, env);
-    }
-    if (path === "/api/chats" && request.method === "GET") {
-      return handleListChats(request, env);
-    }
-    if (path === "/api/chats" && request.method === "POST") {
-      return handleCreateChat(request, env);
-    }
-    if (path.indexOf("/api/chats/") === 0 && path.endsWith("/messages") && request.method === "GET") {
-      var chatId = path.split("/")[3];
-      return handleChatHistory(request, env, chatId);
-    }
-    if (path === "/api/upload" && request.method === "POST") {
-      return handleUpload(request, env);
-    }
-    if (path.indexOf("/files/") === 0 && request.method === "GET") {
-      var key = decodeURIComponent(path.slice("/files/".length));
-      return handleFileGet(request, env, key);
-    }
-    if (path.indexOf("/ws/") === 0) {
-      var wsChatId = path.slice("/ws/".length);
-      return handleWsProxy(request, env, wsChatId);
-    }
-
-    return new Response("not found", { status: 404 });
-  }
+  });
 };
+
+el("new-chat-modal").onclick = function(e){
+  if (e.target === el("new-chat-modal")){ el("new-chat-modal").classList.remove("active"); }
+};
+</script>
+</body>
+</html>
