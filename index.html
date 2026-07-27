@@ -665,9 +665,7 @@ import {
   query, where, orderBy, limit, onSnapshot, getDocs, serverTimestamp,
   Timestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import {
-  getStorage, ref, uploadBytes, getDownloadURL
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyAwbwglqgM77hE5Dgp9J9C9PJfv6RnYhlI",
@@ -680,10 +678,14 @@ const FIREBASE_CONFIG = {
 
 const EMAIL_DOMAIN = "lineclone-users.app";
 
+const SUPABASE_URL = "https://jayjuqdwihgtwukhcshn.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_OLzy4uaLMghRkhLxe2Wpjw_G60-twPG";
+const SUPABASE_BUCKET = "data";
+
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const storage = getStorage(app);
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const googleProvider = new GoogleAuthProvider();
 
 var state = {
@@ -1188,12 +1190,15 @@ function sendCurrentMessage(){
 el("file-input").onchange = function(){
   var file = el("file-input").files[0];
   if (!file || !state.currentChatId) return;
-  var path = "files/" + state.me.uid + "/" + Date.now() + "_" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
-  var fileRef = ref(storage, path);
-  uploadBytes(fileRef, file).then(function(){
-    return getDownloadURL(fileRef);
-  }).then(function(url){
-    addDoc(collection(db,"chats",state.currentChatId,"messages"), {
+  var path = state.me.uid + "/" + Date.now() + "_" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
+  supabase.storage.from(SUPABASE_BUCKET).upload(path, file, {
+    cacheControl: "3600",
+    upsert: false
+  }).then(function(result){
+    if (result.error) throw result.error;
+    var pub = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path);
+    var url = pub.data.publicUrl;
+    return addDoc(collection(db,"chats",state.currentChatId,"messages"), {
       from: state.me.uid,
       fromName: state.me.displayName,
       text: "",
