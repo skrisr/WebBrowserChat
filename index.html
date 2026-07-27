@@ -12,11 +12,15 @@
         |  ブラウザ上のJavaScriptからFirebase SDKを直接呼び出す
         v
   [Firebase (Google)]
-        |-- Authentication   : ユーザー名+パスワードでログイン
-        |                      (内部的には username@lineclone-users.app という
-        |                       仮のメールアドレスに変換してFirebase Authに登録)
+        |-- Authentication   : 4方式のログインに対応
+        |                      1. Googleログイン(signInWithPopup + GoogleAuthProvider)
+        |                      2. メールアドレス+パスワード(実在メアドで直接登録)
+        |                      3. 匿名ログイン(signInAnonymously)
+        |                      4. ユーザー名+パスワード
+        |                         (内部的には username@lineclone-users.app という
+        |                          仮のメールアドレスに変換してFirebase Authに登録)
         |-- Firestore        : usernames  ... ユーザー名の重複チェック用
-        |                       profiles   ... 表示名・アイコン色などのプロフィール
+        |                       profiles   ... 表示名・アイコン色・匿名フラグなど
         |                       chats      ... チャットのメンバー・種別・既読状況
         |                       chats/{id}/messages ... メッセージ本体(リアルタイム購読)
         |                       chats/{id}/typing   ... 入力中の状態
@@ -27,15 +31,27 @@
         スマホ幅: どちらか一方のみ表示し、ヘッダーの戻る操作で切替
 
   主な機能:
-        ユーザー名でのログイン/新規登録, チャット一覧, 個別チャット,
-        グループチャット, リアルタイム送受信(Firestore onSnapshot),
+        4方式ログイン/新規登録, 匿名アカウントの本登録への昇格(アカウントリンク),
+        チャット一覧, 個別チャット, グループチャット,
+        リアルタイム送受信(Firestore onSnapshot),
         画像/ファイル送信(Firebase Storage), 既読表示, 入力中表示,
         未読バッジ, 日付区切り, ダークモード切替, チャット検索,
         新規チャット作成モーダル
 
+  匿名アカウントの扱いについて:
+        - 匿名ログイン(signInAnonymously)はブラウザのlocalStorageに認証情報を
+          保持するだけなので、Cookie/サイトデータを消去したりデバイスを変えると
+          二度とそのアカウントに戻れなくなる。
+        - そのため、ヘッダーに常時「アカウントを保存」ボタンを表示し、かつ初回
+          ログイン時にもモーダルで一度案内する。
+        - リンク(linkWithCredential / linkWithPopup)はuidを変えずに認証方法を
+          追加する仕組みなので、profiles/chats等のデータはそのまま引き継がれる。
+          表示名も匿名時のものをそのまま使う(ユーザー名方式でリンクする場合も
+          表示名はリンク前のものを維持し、ユーザー名だけ新規に選んでもらう)。
+
   セットアップに必要な作業 (すべてWebブラウザの管理画面のみで可能):
-        1. Firebaseプロジェクトを作成し、Authentication(メール/パスワード)
-           Firestore, Storageを有効化する
+        1. Firebaseプロジェクトを作成し、Authentication
+           (Google/メール-パスワード/匿名)、Firestore、Storageを有効化する
         2. Firebaseの設定値(FIREBASE_CONFIG)をこのファイル内の該当箇所に貼る
         3. Firestore/Storageのセキュリティルールを、別途渡すルール文言に置き換える
         4. GitHubリポジトリを作り、GitHub Pagesを有効化してこのファイルを置く
@@ -43,6 +59,8 @@
 --------------------------------------------------------------------------------
  更新履歴 (このファイルを編集するたびに、この下へ1行追記すること)
    2026-07-27  Cloudflare Worker版から、Firebase + GitHub Pages版へ全面移行
+   2026-07-27  認証をGoogle/メール/匿名/ユーザー名の4方式に拡張し、
+               匿名アカウントのリンク(本登録への昇格)機能を追加
 ================================================================================
 -->
 <!DOCTYPE html>
@@ -65,6 +83,8 @@
   --header-bg:#06C755;
   --header-text:#ffffff;
   --danger:#ff4b4b;
+  --warn-bg:#fff6da;
+  --warn-border:#f0d789;
   --radius:14px;
 }
 [data-theme="dark"]{
@@ -77,6 +97,8 @@
   --bubble-other:#242731;
   --header-bg:#0d3b22;
   --header-text:#f0f0f0;
+  --warn-bg:#332b0f;
+  --warn-border:#5c4b12;
 }
 *{box-sizing:border-box;}
 html,body{height:100%;margin:0;padding:0;}
@@ -102,6 +124,7 @@ input,textarea{font-family:inherit;}
   justify-content:center;
   background:linear-gradient(160deg,var(--green),var(--green-dark));
   padding:20px;
+  overflow-y:auto;
 }
 .auth-box{
   background:#ffffff;
@@ -110,6 +133,7 @@ input,textarea{font-family:inherit;}
   max-width:380px;
   padding:32px 28px;
   box-shadow:0 10px 40px rgba(0,0,0,0.25);
+  margin:20px 0;
 }
 .auth-logo{
   text-align:center;
@@ -124,6 +148,49 @@ input,textarea{font-family:inherit;}
   font-size:13px;
   margin-bottom:22px;
 }
+
+.google-btn{
+  width:100%;
+  padding:11px 0;
+  border:1px solid #dcdcdc;
+  border-radius:10px;
+  background:#fff;
+  color:#333;
+  font-size:14.5px;
+  font-weight:600;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  margin-bottom:10px;
+}
+.google-btn .g-icon{
+  width:18px;height:18px;
+  border-radius:50%;
+  background:conic-gradient(from -45deg,#EA4335 0 25%,#4285F4 0 50%,#34A853 0 75%,#FBBC05 0 100%);
+  flex-shrink:0;
+}
+.anon-btn{
+  width:100%;
+  padding:11px 0;
+  border:1px dashed #c9c9c9;
+  border-radius:10px;
+  background:#f7f7f7;
+  color:#666;
+  font-size:13.5px;
+  font-weight:600;
+  margin-bottom:18px;
+}
+
+.auth-divider{
+  display:flex;align-items:center;gap:10px;
+  color:#aaa;font-size:11.5px;
+  margin:4px 0 16px;
+}
+.auth-divider::before,.auth-divider::after{
+  content:"";flex:1;height:1px;background:#e3e3e3;
+}
+
 .auth-tabs{
   display:flex;
   margin-bottom:18px;
@@ -134,10 +201,10 @@ input,textarea{font-family:inherit;}
 .auth-tab{
   flex:1;
   text-align:center;
-  padding:10px 0;
+  padding:9px 0;
   background:#f7f7f7;
   border:none;
-  font-size:14px;
+  font-size:12.5px;
   color:#666;
 }
 .auth-tab.active{
@@ -180,9 +247,30 @@ input,textarea{font-family:inherit;}
   min-height:16px;
   text-align:center;
 }
+.auth-form-panel{display:none;}
+.auth-form-panel.active{display:block;}
 
 #main-screen{display:none;flex:1;overflow:hidden;}
 #main-screen.active{display:flex;}
+
+.save-account-banner{
+  display:none;
+  background:var(--warn-bg);
+  border-bottom:1px solid var(--warn-border);
+  padding:8px 14px;
+  font-size:12.5px;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.save-account-banner.show{display:flex;}
+.save-account-banner button{
+  background:var(--green);
+  color:#fff;border:none;
+  padding:6px 12px;border-radius:8px;
+  font-size:12px;font-weight:700;
+  flex-shrink:0;
+}
 
 .sidebar{
   width:340px;
@@ -208,7 +296,7 @@ input,textarea{font-family:inherit;}
   color:#fff;
   width:32px;height:32px;
   border-radius:50%;
-  font-size:16px;
+  font-size:14px;
   display:flex;align-items:center;justify-content:center;
 }
 .search-bar{padding:8px 12px;border-bottom:1px solid var(--border);}
@@ -347,7 +435,7 @@ input,textarea{font-family:inherit;}
   background:var(--sidebar-bg);
   border-radius:16px;
   width:100%;max-width:400px;
-  max-height:80vh;
+  max-height:85vh;
   display:flex;flex-direction:column;
   overflow:hidden;
 }
@@ -355,18 +443,29 @@ input,textarea{font-family:inherit;}
 .modal-head h3{margin:0;font-size:16px;}
 .modal-close{background:none;border:none;font-size:18px;color:var(--sub);}
 .modal-body{padding:14px 16px;overflow-y:auto;flex:1;}
-.modal-body input[type=text]{
+.modal-body p.hint{font-size:12.5px;color:var(--sub);margin:0 0 14px;line-height:1.6;}
+.modal-body input[type=text],.modal-body input[type=email],.modal-body input[type=password]{
   width:100%;padding:10px 12px;border:1px solid var(--border);
   border-radius:10px;margin-bottom:12px;font-size:14px;
   background:var(--bg);color:var(--text);outline:none;
 }
 .user-pick{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border);}
 .user-pick input{margin-left:auto;}
-.modal-foot{padding:14px 16px;border-top:1px solid var(--border);}
+.modal-foot{padding:14px 16px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;}
 .modal-foot button{
   width:100%;padding:11px 0;border:none;border-radius:10px;
   background:var(--green);color:#fff;font-weight:700;font-size:14.5px;
 }
+.modal-foot .secondary{
+  background:none;color:var(--sub);font-weight:600;font-size:13px;padding:6px 0;
+}
+.link-tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;}
+.link-tab{
+  padding:7px 12px;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg);color:var(--text);font-size:12.5px;
+}
+.link-tab.active{background:var(--green);color:#fff;border-color:var(--green);}
+.link-error{color:var(--danger);font-size:12.5px;min-height:16px;margin-top:2px;}
 
 @media (max-width:820px){
   .sidebar{width:100%;min-width:0;}
@@ -390,12 +489,52 @@ input,textarea{font-family:inherit;}
     <div class="auth-box">
       <div class="auth-logo">LINE再現プロジェクト</div>
       <div class="auth-sub">Firebase + GitHub Pagesで動くチャットアプリ</div>
+
+      <button class="google-btn" id="google-login-btn">
+        <span class="g-icon"></span> Googleでログイン
+      </button>
+      <button class="anon-btn" id="anon-login-btn">登録せずに試してみる(匿名)</button>
+
+      <div class="auth-divider">またはメール/ユーザー名で</div>
+
       <div class="auth-tabs">
-        <button class="auth-tab active" id="tab-login">ログイン</button>
-        <button class="auth-tab" id="tab-register">新規登録</button>
+        <button class="auth-tab active" data-mode="mail-login">メールログイン</button>
+        <button class="auth-tab" data-mode="mail-register">メール登録</button>
+        <button class="auth-tab" data-mode="uname-login">ユーザー名</button>
+        <button class="auth-tab" data-mode="uname-register">ユーザー名登録</button>
       </div>
 
-      <form id="login-form">
+      <form class="auth-form-panel active" id="mail-login-form" data-mode="mail-login">
+        <div class="auth-field">
+          <label>メールアドレス</label>
+          <input type="email" id="mail-login-email" autocomplete="email" required>
+        </div>
+        <div class="auth-field">
+          <label>パスワード</label>
+          <input type="password" id="mail-login-password" autocomplete="current-password" required>
+        </div>
+        <button class="auth-submit" type="submit">ログイン</button>
+        <div class="auth-error" id="mail-login-error"></div>
+      </form>
+
+      <form class="auth-form-panel" id="mail-register-form" data-mode="mail-register">
+        <div class="auth-field">
+          <label>表示名</label>
+          <input type="text" id="mail-reg-displayname" required maxlength="30">
+        </div>
+        <div class="auth-field">
+          <label>メールアドレス</label>
+          <input type="email" id="mail-reg-email" autocomplete="email" required>
+        </div>
+        <div class="auth-field">
+          <label>パスワード(6文字以上)</label>
+          <input type="password" id="mail-reg-password" autocomplete="new-password" required minlength="6">
+        </div>
+        <button class="auth-submit" type="submit">登録する</button>
+        <div class="auth-error" id="mail-register-error"></div>
+      </form>
+
+      <form class="auth-form-panel" id="login-form" data-mode="uname-login">
         <div class="auth-field">
           <label>ユーザー名</label>
           <input type="text" id="login-username" autocomplete="username" required>
@@ -408,7 +547,7 @@ input,textarea{font-family:inherit;}
         <div class="auth-error" id="login-error"></div>
       </form>
 
-      <form id="register-form" style="display:none;">
+      <form class="auth-form-panel" id="register-form" data-mode="uname-register">
         <div class="auth-field">
           <label>表示名</label>
           <input type="text" id="reg-displayname" required maxlength="30">
@@ -432,10 +571,15 @@ input,textarea{font-family:inherit;}
       <div class="sidebar-header">
         <div class="title" id="my-name">トーク</div>
         <div class="icons">
+          <button class="icon-btn" id="save-account-btn" title="アカウントを保存" style="display:none;">保存</button>
           <button class="icon-btn" id="theme-btn" title="ダークモード切替">D</button>
           <button class="icon-btn" id="new-chat-btn" title="新規チャット">+</button>
           <button class="icon-btn" id="logout-btn" title="ログアウト">出</button>
         </div>
+      </div>
+      <div class="save-account-banner" id="save-account-banner">
+        <span>匿名利用中です。データを消さないよう保存しませんか?</span>
+        <button id="banner-save-btn">保存する</button>
       </div>
       <div class="search-bar">
         <input type="text" id="chat-search" placeholder="チャットを検索">
@@ -465,6 +609,44 @@ input,textarea{font-family:inherit;}
     </div>
   </div>
 
+  <!-- 匿名→本登録アカウントへのリンクモーダル -->
+  <div class="modal-overlay" id="link-account-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>アカウントを保存</h3>
+        <button class="modal-close" id="close-link-modal">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">
+          今のトーク履歴やプロフィールはそのまま引き継がれます。
+          ブラウザのデータを消しても、下記の方法でいつでもログインし直せるようになります。
+        </p>
+        <button class="google-btn" id="link-google-btn">
+          <span class="g-icon"></span> Googleでリンクする
+        </button>
+
+        <div class="link-tabs">
+          <button class="link-tab active" data-link-mode="mail">メールアドレス</button>
+          <button class="link-tab" data-link-mode="uname">ユーザー名</button>
+        </div>
+
+        <div id="link-mail-panel">
+          <input type="email" id="link-mail-email" placeholder="メールアドレス">
+          <input type="password" id="link-mail-password" placeholder="パスワード(6文字以上)">
+        </div>
+        <div id="link-uname-panel" style="display:none;">
+          <input type="text" id="link-uname-username" placeholder="ユーザー名(半角英数字とアンダースコア 3〜20文字)">
+          <input type="password" id="link-uname-password" placeholder="パスワード(6文字以上)">
+        </div>
+        <div class="link-error" id="link-error"></div>
+      </div>
+      <div class="modal-foot">
+        <button id="link-confirm-btn">この方法で保存する</button>
+        <button class="secondary" id="link-later-btn">あとで(このまま匿名利用を続ける)</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <input type="file" id="file-input" class="hidden-input">
@@ -472,7 +654,10 @@ input,textarea{font-family:inherit;}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  getAuth, GoogleAuthProvider, EmailAuthProvider,
+  signInWithPopup, signInAnonymously,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  linkWithPopup, linkWithCredential,
   onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
@@ -499,9 +684,12 @@ const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
+const googleProvider = new GoogleAuthProvider();
 
 var state = {
   me: null,
+  isAnonymous: false,
+  linkModalShownThisSession: false,
   chats: [],
   currentChatId: null,
   unsubMessages: null,
@@ -552,6 +740,14 @@ function toMillis(ts){
   return Date.now();
 }
 
+function randomGuestName(){
+  return "ゲスト" + Math.floor(1000 + Math.random()*9000);
+}
+
+function usernameToEmail(username){
+  return username + "@" + EMAIL_DOMAIN;
+}
+
 function showAuth(){
   el("auth-screen").style.display = "flex";
   el("main-screen").classList.remove("active");
@@ -561,23 +757,67 @@ function showMain(){
   el("main-screen").classList.add("active");
 }
 
-el("tab-login").onclick = function(){
-  el("tab-login").classList.add("active");
-  el("tab-register").classList.remove("active");
-  el("login-form").style.display = "block";
-  el("register-form").style.display = "none";
-};
-el("tab-register").onclick = function(){
-  el("tab-register").classList.add("active");
-  el("tab-login").classList.remove("active");
-  el("register-form").style.display = "block";
-  el("login-form").style.display = "none";
+/* ---------- 認証タブ(4方式)切り替え ---------- */
+var authTabs = document.querySelectorAll(".auth-tab");
+authTabs.forEach(function(tab){
+  tab.onclick = function(){
+    authTabs.forEach(function(t){ t.classList.remove("active"); });
+    document.querySelectorAll(".auth-form-panel").forEach(function(p){ p.classList.remove("active"); });
+    tab.classList.add("active");
+    document.querySelector(".auth-form-panel[data-mode=\"" + tab.getAttribute("data-mode") + "\"]").classList.add("active");
+  };
+});
+
+/* ---------- Googleログイン ---------- */
+el("google-login-btn").onclick = function(){
+  signInWithPopup(auth, googleProvider).catch(function(err){
+    if (err && err.code === "auth/popup-closed-by-user") return;
+    alert("Googleログインに失敗しました");
+  });
 };
 
-function usernameToEmail(username){
-  return username + "@" + EMAIL_DOMAIN;
-}
+/* ---------- 匿名ログイン ---------- */
+el("anon-login-btn").onclick = function(){
+  signInAnonymously(auth).catch(function(){
+    alert("匿名ログインに失敗しました");
+  });
+};
 
+/* ---------- メールアドレス ログイン/登録 ---------- */
+el("mail-login-form").onsubmit = function(e){
+  e.preventDefault();
+  el("mail-login-error").textContent = "";
+  var email = el("mail-login-email").value.trim();
+  var password = el("mail-login-password").value;
+  signInWithEmailAndPassword(auth, email, password).catch(function(){
+    el("mail-login-error").textContent = "ログインに失敗しました";
+  });
+};
+
+el("mail-register-form").onsubmit = function(e){
+  e.preventDefault();
+  el("mail-register-error").textContent = "";
+  var displayName = el("mail-reg-displayname").value.trim();
+  var email = el("mail-reg-email").value.trim();
+  var password = el("mail-reg-password").value;
+  createUserWithEmailAndPassword(auth, email, password).then(function(cred){
+    var uid = cred.user.uid;
+    var color = colorFromName(displayName || email);
+    return setDoc(doc(db,"profiles",uid), {
+      displayName: displayName,
+      color: color,
+      createdAt: serverTimestamp()
+    });
+  }).catch(function(err){
+    if (err && err.code === "auth/email-already-in-use"){
+      el("mail-register-error").textContent = "このメールアドレスは既に使われています";
+    } else {
+      el("mail-register-error").textContent = "登録に失敗しました";
+    }
+  });
+};
+
+/* ---------- ユーザー名 ログイン/登録(既存の自動メアド変換方式) ---------- */
 el("login-form").onsubmit = function(e){
   e.preventDefault();
   el("login-error").textContent = "";
@@ -635,26 +875,173 @@ el("theme-btn").onclick = function(){
 var savedTheme = localStorage.getItem("line_clone_theme");
 if (savedTheme){ document.body.setAttribute("data-theme", savedTheme); }
 
+/* ---------- 認証状態の監視 ---------- */
 onAuthStateChanged(auth, function(user){
   if (!user){
     state.me = null;
     showAuth();
     return;
   }
+  state.isAnonymous = !!user.isAnonymous;
+
   getDoc(doc(db,"profiles",user.uid)).then(function(snap){
-    if (!snap.exists()) return;
-    var data = snap.data();
+    if (!snap.exists()){
+      if (user.isAnonymous){
+        var guestName = randomGuestName();
+        var color = colorFromName(guestName);
+        return setDoc(doc(db,"profiles",user.uid), {
+          displayName: guestName,
+          color: color,
+          isAnonymous: true,
+          createdAt: serverTimestamp()
+        }).then(function(){
+          return getDoc(doc(db,"profiles",user.uid));
+        });
+      }
+      return snap;
+    }
+    return snap;
+  }).then(function(snap2){
+    var data = snap2.exists() ? snap2.data() : {displayName:"?",color:"#888"};
     state.me = {
       uid: user.uid,
-      username: data.username,
+      username: data.username || null,
       displayName: data.displayName,
       color: data.color
     };
     el("my-name").textContent = state.me.displayName;
+    updateSaveAccountUI();
     showMain();
     loadChats();
+
+    if (state.isAnonymous && !state.linkModalShownThisSession){
+      state.linkModalShownThisSession = true;
+      setTimeout(function(){ openLinkModal(); }, 400);
+    }
   });
 });
+
+function updateSaveAccountUI(){
+  var show = !!state.isAnonymous;
+  el("save-account-btn").style.display = show ? "flex" : "none";
+  el("save-account-banner").classList.toggle("show", show);
+}
+
+el("save-account-btn").onclick = function(){ openLinkModal(); };
+el("banner-save-btn").onclick = function(){ openLinkModal(); };
+
+/* ---------- 匿名アカウントのリンク(本登録への昇格) ---------- */
+function openLinkModal(){
+  el("link-error").textContent = "";
+  el("link-mail-email").value = "";
+  el("link-mail-password").value = "";
+  el("link-uname-username").value = "";
+  el("link-uname-password").value = "";
+  document.querySelectorAll(".link-tab").forEach(function(t){ t.classList.remove("active"); });
+  document.querySelector(".link-tab[data-link-mode=\"mail\"]").classList.add("active");
+  el("link-mail-panel").style.display = "block";
+  el("link-uname-panel").style.display = "none";
+  el("link-account-modal").classList.add("active");
+}
+el("close-link-modal").onclick = function(){ el("link-account-modal").classList.remove("active"); };
+el("link-later-btn").onclick = function(){ el("link-account-modal").classList.remove("active"); };
+el("link-account-modal").onclick = function(e){
+  if (e.target === el("link-account-modal")){ el("link-account-modal").classList.remove("active"); }
+};
+
+document.querySelectorAll(".link-tab").forEach(function(tab){
+  tab.onclick = function(){
+    document.querySelectorAll(".link-tab").forEach(function(t){ t.classList.remove("active"); });
+    tab.classList.add("active");
+    var mode = tab.getAttribute("data-link-mode");
+    el("link-mail-panel").style.display = mode === "mail" ? "block" : "none";
+    el("link-uname-panel").style.display = mode === "uname" ? "block" : "none";
+  };
+});
+
+el("link-google-btn").onclick = function(){
+  el("link-error").textContent = "";
+  linkWithPopup(auth.currentUser, googleProvider).then(function(){
+    afterSuccessfulLink();
+  }).catch(function(err){
+    handleLinkError(err);
+  });
+};
+
+el("link-confirm-btn").onclick = function(){
+  el("link-error").textContent = "";
+  var activeMode = document.querySelector(".link-tab.active").getAttribute("data-link-mode");
+
+  if (activeMode === "mail"){
+    var email = el("link-mail-email").value.trim();
+    var password = el("link-mail-password").value;
+    if (!email || password.length < 6){
+      el("link-error").textContent = "メールアドレスと6文字以上のパスワードを入力してください";
+      return;
+    }
+    var cred = EmailAuthProvider.credential(email, password);
+    linkWithCredential(auth.currentUser, cred).then(function(){
+      var uid = auth.currentUser.uid;
+      return updateDoc(doc(db,"profiles",uid), {isAnonymous: false});
+    }).then(function(){
+      afterSuccessfulLink();
+    }).catch(function(err){
+      handleLinkError(err);
+    });
+    return;
+  }
+
+  if (activeMode === "uname"){
+    var username = el("link-uname-username").value.trim().toLowerCase();
+    var upass = el("link-uname-password").value;
+    if (!/^[a-z0-9_]{3,20}$/.test(username)){
+      el("link-error").textContent = "ユーザー名の形式が正しくありません";
+      return;
+    }
+    if (upass.length < 6){
+      el("link-error").textContent = "パスワードは6文字以上にしてください";
+      return;
+    }
+    getDoc(doc(db,"usernames",username)).then(function(snap){
+      if (snap.exists()){
+        el("link-error").textContent = "そのユーザー名は既に使われています";
+        return null;
+      }
+      var uid = auth.currentUser.uid;
+      var ucred = EmailAuthProvider.credential(usernameToEmail(username), upass);
+      return linkWithCredential(auth.currentUser, ucred).then(function(){
+        return setDoc(doc(db,"usernames",username), {uid: uid});
+      }).then(function(){
+        return updateDoc(doc(db,"profiles",uid), {username: username, isAnonymous: false});
+      });
+    }).then(function(result){
+      if (result === null) return;
+      afterSuccessfulLink();
+    }).catch(function(err){
+      handleLinkError(err);
+    });
+    return;
+  }
+};
+
+function afterSuccessfulLink(){
+  state.isAnonymous = false;
+  updateSaveAccountUI();
+  el("link-account-modal").classList.remove("active");
+}
+
+function handleLinkError(err){
+  if (err && err.code === "auth/popup-closed-by-user") return;
+  if (err && err.code === "auth/credential-already-in-use"){
+    el("link-error").textContent = "その方法は既に別のアカウントで使われています";
+    return;
+  }
+  if (err && err.code === "auth/email-already-in-use"){
+    el("link-error").textContent = "そのメールアドレスは既に使われています";
+    return;
+  }
+  el("link-error").textContent = "保存に失敗しました";
+}
 
 function loadChats(){
   var q = query(collection(db,"chats"), where("members","array-contains",state.me.uid));
@@ -954,7 +1341,9 @@ el("user-search-input").oninput = function(){
       snapshot.forEach(function(docSnap){
         var data = docSnap.data();
         if (docSnap.id === state.me.uid) return;
-        if (q && data.username.indexOf(q) === -1) return;
+        var uname = data.username || "";
+        var dname = (data.displayName || "").toLowerCase();
+        if (q && uname.indexOf(q) === -1 && dname.indexOf(q) === -1) return;
         results.push({uid: docSnap.id, username: data.username, displayName: data.displayName, color: data.color});
       });
       renderUserSearchResults(results.slice(0,20));
@@ -970,8 +1359,8 @@ function renderUserSearchResults(users){
     row.className = "user-pick";
     var checked = state.selectedUsers[u.uid] ? "checked" : "";
     row.innerHTML =
-      "<div class=\"avatar\" style=\"width:34px;height:34px;font-size:13px;background:" + u.color + "\">" + escapeHtml(u.displayName.slice(0,1)) + "</div>" +
-      "<div>" + escapeHtml(u.displayName) + "</div>" +
+      "<div class=\"avatar\" style=\"width:34px;height:34px;font-size:13px;background:" + u.color + "\">" + escapeHtml((u.displayName||"?").slice(0,1)) + "</div>" +
+      "<div>" + escapeHtml(u.displayName || "?") + "</div>" +
       "<input type=\"checkbox\" " + checked + " data-uid=\"" + u.uid + "\">";
     row.querySelector("input").onchange = function(e){
       if (e.target.checked){ state.selectedUsers[u.uid] = true; }
